@@ -13,3 +13,6 @@ docs/
 .env.*
 !.env.example
 node_modules/
+
+# cuda
+wordlist.txt
