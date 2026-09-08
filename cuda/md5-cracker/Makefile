@@ -5,7 +5,7 @@ NVCC = nvcc
 TARGET = main
 
 # Source files
-SRC = main.cu
+SRC = main.cu hash.cu
 
 all: $(TARGET)
 

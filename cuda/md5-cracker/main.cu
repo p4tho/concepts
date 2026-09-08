@@ -1,15 +1,40 @@
+#include <array>
+#include <cstring>
 #include <cuda_runtime.h>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
-#include <optional>
+#include <vector>
+#include "hash.cuh"
+
+constexpr std::size_t BATCH_SIZE = 10'000;
 
 struct Arguments {
     std::string hash;
     std::string wordlist;
 };
+
+void addCandidate(std::vector<Candidate>& batch, const std::string& line) {
+    Candidate candidate{};
+    candidate.length = static_cast<uint32_t>(line.size());
+
+    std::memcpy(candidate.text, line.data(), line.size());
+
+    // Append 1 bit right after string (0x10000000)
+    candidate.text[line.size()] = 0x80;
+
+    // Zero-fill until text reaches 56 bytes (448 bits)
+    std::memset(candidate.text + line.size() + 1, 0, 56 - (line.size() + 1));
+
+    // Append original string length
+    uint64_t bitLength = line.size() * 8;
+    std::memcpy(candidate.text + 56, &bitLength, sizeof(uint64_t));
+
+    batch.push_back(candidate);
+}
 
 bool endsWithTxt(std::string_view str) {
     return str.length() >= 4 && str.substr(str.length() - 4) == ".txt";
@@ -85,6 +110,68 @@ int main(int argc, char* argv[]) {
         cudaGetDeviceProperties(&prop, i);
 
         std::cout << "[*] Found " << prop.name << "." << std::endl;
+    }
+
+    // Iterate through each word in wordlist
+    std::ifstream wordlistFile(args->wordlist);
+
+    if (!wordlistFile.is_open()) {
+        std::cerr << "[!] Error: Could not open file " << args->wordlist << "." << std::endl;
+        return 1;
+    }
+
+    std::string line;
+    std::vector<Candidate> batch;
+    int batchCount = 1;
+
+    while (std::getline(wordlistFile, line)) {
+        if (line.empty()) {
+            continue;
+        }
+
+        if (line.length() > MAX_CANDIDATE_LEN) {
+            std::cout << "[?] Warning: " << line << " exceeds 32 character limit." << std::endl;
+            continue;
+        }
+
+        addCandidate(batch, line);
+
+        if (batch.size() == BATCH_SIZE) {
+            // Do MD5 hash on batch and check if any match
+            auto match = processBatch(batch, args->hash);
+
+            if (match) {
+                std::cout
+                    << "found match: "
+                    << *match
+                    << '\n';
+
+                return 0;
+            } else {
+                std::cout << "[*] No match found from batch " << batchCount << "." << std::endl;
+                batchCount += 1;
+            }
+
+            batch.clear();
+
+            continue;
+        }
+    }
+
+    if (!batch.empty()) {
+        // Do MD5 hash on batch and check if any match
+        auto match = processBatch(batch, args->hash);
+
+        if (match) {
+            std::cout
+                << "found match: "
+                << *match
+                << '\n';
+
+            return 0;
+        } else {
+            std::cout << "[*] No match found from batch " << batchCount << "." << std::endl;
+        }
     }
 
     return 0;
